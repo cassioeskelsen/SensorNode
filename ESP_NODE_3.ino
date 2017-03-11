@@ -1,13 +1,16 @@
 // ###FEHLER:
 // Alias und Server werden vermischt
 
+// In Arbeit
+// empfangen für LED
+
 // ###ToDo
 // Daten nur senden, wenn sich was geändert hart
-// empfangen für LED
 // empfangen einer reset Aufforderung
 // Update over Air
 // Bei der Initialisierung der Sensoren abfragen, ob erfolgreich und nur dann weiter mit dem Sensor
 // VBatt Sensor und die anderen Systemwerte
+// MQTT Client ID -> DeviceID
 
 #include <ESP8266WiFi.h>          // https://github.com/esp8266/Arduino
 #include <ESP8266WebServer.h>
@@ -23,6 +26,12 @@
 #include <Ticker.h>
 #include <EEPROM.h>               // Funktionsweise übernommen von https://github.com/tzapu/SonoffBoilerplate/blob/master/SonoffBoilerplate.ino
 
+// Sendeinterval
+#define sendSystemValueInterval  3600000 //3600000 = 1x pro Stunde
+#define sendSensorValueInterval  60000 //60000 = 1x pro Minute
+bool firstSendSystemValue = 0;
+bool firstSendSensorValue = 0;
+
 // Ticker
 Ticker ticker;
 int tickerCount = 0;
@@ -34,7 +43,8 @@ char alias_Topic[30] = "";
 
 //Touch
 const int button1Pin = D5;
-int button1State = 0;
+bool button1State = 0;
+bool button1State_last = 0;
 String Touch1_state_str;
 char Touch1_state_char[5];
 char Touch1_state_Topic[30] = "";
@@ -92,14 +102,16 @@ char ESPFreeHeap_Topic[30] = "";
 char ESPmillis_Topic[30] = "";
 char ESPVBatt_Topic[30] = "";
 
+// subscribe
+char subscribe_Topic[30] = "";
 
 // MQTT
-#define EEPROM_SALT 12661
+#define EEPROM_SALT 12662
 typedef struct {
-  char mqtt_server[40] = "***.cloudmqtt.com";
-  char mqtt_port[6]    = "*****";
-  char mqtt_user[20]   = "********";
-  char mqtt_pass[20]   = "************";
+  char mqtt_server[40] = "192.168.1.15";
+  char mqtt_port[6]    = "1883";
+  char mqtt_user[20]   = "*****";
+  char mqtt_pass[20]   = "*****";
   char mqtt_alias[20]   = "Alias";
   int  salt            = EEPROM_SALT;
 } WMSettings;
@@ -109,8 +121,64 @@ WMSettings settings;
 WiFiManager wifiManager;  // wifimanager Instanz
 WiFiClient wifiClient;
 
+//NEOPIXEL
+const int NEOPIXEL_PIN = D6; //Neopixel Pin
+const int NEOPIXEL_COUNT = 2; //Neopixel Anzahl
+Adafruit_NeoPixel myNEOPIXEL = Adafruit_NeoPixel(NEOPIXEL_COUNT, NEOPIXEL_PIN, NEO_GRB + NEO_KHZ800);
+
+int NEO_R = 0;
+int NEO_G = 0;
+int NEO_B = 0;
+int NEO_00R = 0;
+int NEO_00G = 0;
+int NEO_00B = 0;
+int NEO_01R = 0;
+int NEO_01G = 0;
+int NEO_01B = 0;
+int NEO_BRIGHT = 255;
+
 void callback(char* topic, byte* payload, unsigned int length) { //nicht verschieben!
   // handle message arrived
+  Serial.println("### Message arrived");
+  Serial.print("Topic: ");
+  Serial.println(String(topic));
+
+  String value = String((char*)payload);
+  Serial.println("---------");
+  Serial.println(value);
+  Serial.println(value.substring(1, 3));
+  Serial.println(value.substring(3, 5));
+  Serial.println(value.substring(5, 7));
+  Serial.println("---------");
+
+  NEO_R = value.substring(1, 3).toInt();
+  NEO_G = value.substring(3, 5).toInt();
+  NEO_B = value.substring(5, 7).toInt();
+
+  // Aktoren setzen
+  if (String(topic) == "192a66/IN/LED") {
+    Serial.println("Daten fuer alle LED");
+    NEO_00R = NEO_R;
+    NEO_00G = NEO_G;
+    NEO_00B = NEO_B;
+    NEO_01R = NEO_R;
+    NEO_01G = NEO_G;
+    NEO_01B = NEO_B;
+  }
+  if (String(topic) == "192a66/IN/LED01") {
+    Serial.println("Daten fuer LED 01");
+    NEO_00R = NEO_R;
+    NEO_00G = NEO_G;
+    NEO_00B = NEO_B;
+
+  }
+  if (String(topic) == "192a66/IN/LED02") {
+    Serial.println("Daten fuer LED 02");
+
+    NEO_01R = NEO_R;
+    NEO_01G = NEO_G;
+    NEO_01B = NEO_B;
+  }
 }
 
 bool shouldSaveConfig = false;
@@ -119,10 +187,14 @@ void saveConfigCallback () {
   shouldSaveConfig = true;
 }
 
-PubSubClient mqttClient(settings.mqtt_server, atoi(settings.mqtt_port), callback, wifiClient);
+//PubSubClient mqttClient(settings.mqtt_server, atoi(settings.mqtt_port), callback, wifiClient);
+PubSubClient mqttClient(wifiClient); //##Test ohne PW
 
 //### SETUP ################################################################################
 void setup() {
+  mqttClient.setServer(settings.mqtt_server, atoi(settings.mqtt_port)); //##Test ohne PW
+  mqttClient.setCallback(callback);
+
   Serial.begin(115200);
   Serial.println("\n Starte ESP NODE");
 
@@ -164,7 +236,8 @@ void setup() {
   Serial.print("mqtt_pass: ");
   Serial.println(settings.mqtt_pass);
 
-  mqttClient.connect ("ESP", settings.mqtt_user, settings.mqtt_pass);
+  //mqttClient.connect ("arduinoClient", settings.mqtt_user, settings.mqtt_pass);
+  mqttClient.connect ("arduinoClient");
 
   WiFiManagerParameter custom_mqtt_text1("<br/><b>MQTT config</b><br/>");
   wifiManager.addParameter(&custom_mqtt_text1);
@@ -242,9 +315,9 @@ void setup() {
   }
 
   //NEOPIXEL
-  const int NEOPIXEL_PIN = D6; //Neopixel Pin
-  const int NEOPIXEL_COUNT = 2; //Neopixel Anzahl
-  Adafruit_NeoPixel myNEOPIXEL = Adafruit_NeoPixel(NEOPIXEL_COUNT, NEOPIXEL_PIN, NEO_GRB + NEO_KHZ800);
+  myNEOPIXEL.setBrightness(NEO_BRIGHT);
+  myNEOPIXEL.begin();
+  myNEOPIXEL.show();
 
   //Alias
   ultoa(chipid, alias_Topic, HEX);
@@ -252,26 +325,26 @@ void setup() {
 
   //Touch
   ultoa(chipid, Touch1_state_Topic, HEX);
-  strcat(Touch1_state_Topic, "/Touch1/state");  // Type anhängen
+  strcat(Touch1_state_Topic, "/Touch1_state");  // Type anhängen
 
   //DS10B20 temperatur OneWire
   myDS10B20.begin();
   ultoa(chipid, DS10B20_temperatur_Topic, HEX); //Topic mit ChipID in HEX füllen
-  strcat(DS10B20_temperatur_Topic, "/DS10B20/temperatur");  // Type anhängen
+  strcat(DS10B20_temperatur_Topic, "/DS10B20_temperatur");  // Type anhängen
 
   //TSL2561 brightness I2C
   myTSL2561.begin();
   myTSL2561.enableAutoRange(true);
   myTSL2561.setIntegrationTime(TSL2561_INTEGRATIONTIME_13MS);
   ultoa(chipid, TSL2561_brightness_Topic, HEX);
-  strcat(TSL2561_brightness_Topic, "/TSL2561/brightness");
+  strcat(TSL2561_brightness_Topic, "/TSL2561_brightness");
 
   //SHT20 Humidity, Temp I2C
   myHTU21D.begin();
   ultoa(chipid, HTU21D_humidity_Topic, HEX);
-  strcat(HTU21D_humidity_Topic, "/HTU21D/humidity");
+  strcat(HTU21D_humidity_Topic, "/HTU21D_humidity");
   ultoa(chipid, HTU21D_temperatur_Topic, HEX);
-  strcat(HTU21D_temperatur_Topic, "/HTU21D/temperatur");
+  strcat(HTU21D_temperatur_Topic, "/HTU21D_temperatur");
 
   //ESP
   ESPWiFiMAC_str = WiFi.macAddress();
@@ -291,6 +364,10 @@ void setup() {
   strcat(ESPmillis_Topic, "/millis");
   ultoa(chipid, ESPVBatt_Topic, HEX);
   strcat(ESPVBatt_Topic, "/VBatt");
+
+  //subscribe
+  ultoa(chipid, subscribe_Topic, HEX);
+  strcat(subscribe_Topic, "/IN/#");
 }
 
 //### LOOP ################################################################################
@@ -299,7 +376,29 @@ void loop() {
     ESP.reset();
   }
 
-  if (millis() % 7000  == 0) {  //all möglichen Systemwerte senden
+  mqttClient.loop();
+
+  //Daten empfangen
+  if (mqttClient.connect("arduinoClient")) {
+    mqttClient.subscribe(subscribe_Topic);
+  }
+
+  //sofort senden, wenn sich was ändert
+  //Touch
+  button1State = digitalRead(button1Pin);
+  if (button1State != button1State_last) {
+    Touch1_state_str = String(button1State);
+    Touch1_state_str.toCharArray(Touch1_state_char, Touch1_state_str.length() + 1);
+    //if (mqttClient.connect("arduinoClient", settings.mqtt_user, settings.mqtt_pass)) {
+    if (mqttClient.connect("arduinoClient")) {
+      mqttClient.publish(Touch1_state_Topic, Touch1_state_char);
+    }
+    button1State_last = button1State;
+  }
+
+  // Senden im sendSystemValueInterval
+  if ((millis() % sendSystemValueInterval  == 0) || (firstSendSystemValue == 0)) {  //System Values senden
+    firstSendSystemValue = 1;
     ESPWiFiMAC_str.toCharArray(ESPWiFiMAC_char, ESPWiFiMAC_str.length() + 1);
     ultoa(ESP.getFlashChipId(), ESPFlashChipId_char, HEX);
     ultoa(ESP.getFlashChipSize(), ESPFlashChipSize_char, DEC); ;
@@ -309,8 +408,9 @@ void loop() {
     ultoa(millis(), ESPmillis_char, DEC); //millis();
     strcat(ESPVBatt_char, "");  //Analogeingang auslesen
 
-    if (mqttClient.connect("arduinoClient", settings.mqtt_user, settings.mqtt_pass)) {
-      Serial.println("### mqttClient.connect - erfolgreich");
+    //if (mqttClient.connect("arduinoClient", settings.mqtt_user, settings.mqtt_pass)) {
+    if (mqttClient.connect("arduinoClient")) {
+      Serial.println("### mqttClient.connect - Systemwerte senden erfolgreich");
       mqttClient.publish(alias_Topic, settings.mqtt_alias);
       mqttClient.publish(ESPWiFiMAC_Topic, ESPWiFiMAC_char);
       mqttClient.publish(ESPFlashChipId_Topic, ESPFlashChipId_char);
@@ -320,14 +420,19 @@ void loop() {
       mqttClient.publish(ESPFreeHeap_Topic, ESPFreeHeap_char);
       mqttClient.publish(ESPmillis_Topic, ESPmillis_char);
       mqttClient.publish(ESPVBatt_Topic, ESPVBatt_char);
+
     } else {
-      Serial.println("### mqttClient.connect - mit Fehler");
+      Serial.println("### mqttClient.connect - Systemwerte senden mit Fehler");
     }
   }
-  if (millis() % 30000  == 0) { //Sensorabfrage aller 60 Sekunden
-    Serial.println("Sensordaten senden");
+
+  // Senden im sendSensorValueInterval
+  if ((millis() % sendSensorValueInterval  == 0) || (firstSendSensorValue == 0) ) { //Sensorabfrage und senden
+    firstSendSensorValue = 1;
+    Serial.println("### Sensordaten senden");
+
     //Touch
-    Touch1_state_str = String(digitalRead(button1Pin));
+    Touch1_state_str = String(button1State);
     Touch1_state_str.toCharArray(Touch1_state_char, Touch1_state_str.length() + 1);
 
     //DS10B20 Temperatur OneWire
@@ -371,11 +476,6 @@ void loop() {
 
     Serial.println("");
 
-    Serial.print("Touch1: ");
-    Serial.print(Touch1_state_Topic);
-    Serial.print(" | ");
-    Serial.println(Touch1_state_char);
-
     Serial.print("DS10B20_temperatur: ");
     Serial.print(DS10B20_temperatur_Topic);
     Serial.print(" | ");
@@ -396,18 +496,24 @@ void loop() {
     Serial.print(" | ");
     Serial.println(HTU21D_humidity_char);
 
-    if (mqttClient.connect("arduinoClient", settings.mqtt_user, settings.mqtt_pass)) {
-      Serial.println("### mqttClient.connect - erfolgreich");
+    //if (mqttClient.connect("arduinoClient", settings.mqtt_user, settings.mqtt_pass)) {
+    if (mqttClient.connect("arduinoClient")) {
+      Serial.println("### mqttClient.connect - Messdaten senden erfolgreich");
       mqttClient.publish(Touch1_state_Topic, Touch1_state_char);
       mqttClient.publish(DS10B20_temperatur_Topic, DS10B20_temperatur_char);
       mqttClient.publish(TSL2561_brightness_Topic, TSL2561_brightness_char);
       mqttClient.publish(HTU21D_temperatur_Topic, HTU21D_temperatur_char);
       mqttClient.publish(HTU21D_humidity_Topic, HTU21D_humidity_char);
     } else {
-      Serial.println("### mqttClient.connect - mit Fehler");
+      Serial.println("### mqttClient.connect - Messdaten senden mit Fehler");
     }
-    //client.subscribe("inTopic");
   }
+
+  // Aktoren setzen
+  myNEOPIXEL.setPixelColor(0, myNEOPIXEL.Color(NEO_00R, NEO_00G, NEO_00B));
+  myNEOPIXEL.setPixelColor(1, myNEOPIXEL.Color(NEO_01R, NEO_01G, NEO_01B));
+  myNEOPIXEL.setBrightness(NEO_BRIGHT);
+  myNEOPIXEL.show();
 }
 
 //### FUNCTIONEN ################################################################################
